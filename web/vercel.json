@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/service.ts": { "maxDuration": 300 },
+    "api/batch.ts": { "maxDuration": 300 }
+  }
+}
