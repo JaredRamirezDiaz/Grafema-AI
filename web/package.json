@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
     "dev:agent": "node --import tsx scripts/dev-agent.ts",
     "test:agent": "node --import tsx --test tests/service-agent.test.ts",
     "build": "tsc -b && vite build",

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { agentApiUrl } from './agent-api'
 import { recipes, rememberService, type Recipe } from './agent-shared'
 import './agent.css'
 import './batch.css'
@@ -21,7 +22,7 @@ export default function BatchApp() {
   const stop = useRef(false)
 
   useEffect(() => {
-    fetch('/api/service').then(response => response.json() as Promise<{ providers: Provider[] }>).then(data => {
+    fetch(agentApiUrl('/api/service')).then(response => response.json() as Promise<{ providers: Provider[] }>).then(data => {
       const entries = data.providers || []
       setProviders(entries)
       if (entries[0]) { setProvider(entries[0].id); setModel(entries[0].models[0]?.id || '') }
@@ -31,7 +32,7 @@ export default function BatchApp() {
   async function refresh(token = adminToken, clearError = true): Promise<Batch | null> {
     if (clearError) setError('')
     try {
-      const response = await fetch('/api/batch', { headers: { 'x-dataset-admin-token': token } })
+      const response = await fetch(agentApiUrl('/api/batch'), { headers: { 'x-dataset-admin-token': token } })
       const data = await response.json() as Batch & { error?: string }
       if (!response.ok) throw new Error(data.error || 'No se pudo consultar el avance.')
       setBatch(data)
@@ -52,7 +53,7 @@ export default function BatchApp() {
       for (const scenario of pending) {
         if (stop.current) break
         setCurrent(`${scenario.id} · ${scenario.request.theme}`)
-        const response = await fetch('/api/batch', { method: 'POST', headers: {
+        const response = await fetch(agentApiUrl('/api/batch'), { method: 'POST', headers: {
           'Content-Type': 'application/json', 'x-dataset-admin-token': adminToken,
         }, body: JSON.stringify({ scenarioId: scenario.id, provider, model }) })
         const data = await response.json() as { error?: string; draft?: { id: string; editToken: string }; theme?: string; recipe?: Recipe; model?: string; provider?: string }

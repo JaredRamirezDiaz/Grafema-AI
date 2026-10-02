@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.recommendation import make_messages, parse_recommendations
 from app.retrieval import rank_songs
-from app.search_service import embed_query, fetch_candidates, post_logged
+from app.search_service import UpstreamStageError, embed_query, fetch_candidates, post_logged
 
 load_dotenv()
 MODEL = "@cf/baai/bge-m3"
@@ -150,18 +150,33 @@ async def search_enhanced(payload:EnhancedSearchRequest) -> EnhancedSearchRespon
     trace_id=uuid4().hex[:8]
     logger.info('search trace=%s stage=request mode=%s limit=%d query_chars=%d',
                 trace_id,payload.mode,payload.limit,len(query))
+    stage='embedding'
     try:
         async with httpx.AsyncClient(timeout=45) as client:
             vector=await embed_query(client,config,query,trace_id=trace_id)
+            stage='catalog_search'
             songs,sections=await fetch_candidates(client,config,vector,trace_id=trace_id)
+        stage='ranking'
         logger.info('search trace=%s stage=ranking start songs=%d sections=%d',trace_id,len(songs),len(sections))
         rows,intent=rank_songs(songs,sections,query,payload.mode,payload.limit)
         logger.info('search trace=%s stage=ranking results=%d',trace_id,len(rows))
         return EnhancedSearchResponse(query=query,model=MODEL,mode=payload.mode,intent=intent,
             results=[SongResult(**{**row,'excerpt':(row['matched_section']['text'] if row['matched_section'] else row['lyrics']).replace('\n',' ').strip()[:185]}) for row in rows])
+    except UpstreamStageError as exc:
+        logger.error('search trace=%s stage=%s error_type=%s',trace_id,exc.stage,exc.kind)
+        raise HTTPException(502,detail={
+            'message':'Una dependencia externa rechazó o no respondió la solicitud.',
+            'stage':exc.stage,'type':exc.kind,'upstream_status':exc.status,
+            'provider_detail':exc.detail,'trace_id':trace_id,
+            'hint':'Busca este identificador de traza en los logs de Render para ver la secuencia completa.',
+        }) from exc
     except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
         logger.error('search trace=%s stage=enhanced_failure error_type=%s',trace_id,type(exc).__name__)
-        raise HTTPException(502,detail='No se pudo completar la búsqueda ampliada. Comprueba que ejecutaste la migración y cargaste las etiquetas.') from exc
+        raise HTTPException(502,detail={
+            'message':'No se pudo completar la búsqueda ampliada.',
+            'stage':stage,'type':type(exc).__name__,'trace_id':trace_id,
+            'hint':'Busca este identificador de traza en los logs de Render. Comprueba también la migración y las etiquetas del catálogo.',
+        }) from exc
 
 
 @app.post("/recommend", response_model=RecommendResponse)

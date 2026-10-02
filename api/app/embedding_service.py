@@ -110,6 +110,7 @@ async def _remote(client: httpx.AsyncClient, config: dict, query: str, trace_id:
 
 async def embed_with_fallback(client: httpx.AsyncClient, config: dict, query: str, trace_id: str, post_logged) -> list[float]:
     providers = provider_order()
+    last_error = None
     for provider in providers:
         try:
             logger.info('search trace=%s stage=embedding provider=%s start', trace_id, provider)
@@ -122,8 +123,11 @@ async def embed_with_fallback(client: httpx.AsyncClient, config: dict, query: st
             logger.info('search trace=%s stage=embedding provider=%s ready', trace_id, provider)
             return vector
         except (httpx.HTTPError, ValueError, RuntimeError, ImportError, OSError, KeyError, TypeError) as exc:
+            last_error = exc
             logger.error('search trace=%s stage=embedding provider=%s failed error_type=%s',
                          trace_id, provider, type(exc).__name__)
             if provider != providers[-1]:
                 logger.warning('search trace=%s stage=embedding fallback=%s', trace_id, providers[providers.index(provider)+1])
+    if isinstance(last_error,httpx.HTTPError):
+        raise last_error
     raise ValueError('No hay un proveedor de embeddings BGE-M3 disponible; revisa los logs del mismo trace')

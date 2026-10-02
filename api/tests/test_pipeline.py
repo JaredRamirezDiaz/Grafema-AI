@@ -91,6 +91,12 @@ class PipelineTests(unittest.TestCase):
             with TestClient(app) as client:
                 response=client.post('/search/enhanced',json={'query':'segunda venida de Cristo'})
         self.assertEqual(response.status_code,502)
+        detail=response.json()['detail']
+        self.assertEqual(detail['stage'],'supabase_search_songs_labeled')
+        self.assertEqual(detail['upstream_status'],404)
+        self.assertIn('PGRST202',detail['provider_detail'])
+        self.assertNotIn('sb_secret_hidden',detail['provider_detail'])
+        self.assertEqual(len(detail['trace_id']),8)
         logs='\n'.join(captured.output)
         self.assertIn('stage=supabase_search_songs_labeled upstream_status=404',logs)
         self.assertIn('PGRST202',logs)

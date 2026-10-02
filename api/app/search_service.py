@@ -10,6 +10,16 @@ MODEL='@cf/baai/bge-m3'
 logger=logging.getLogger('uvicorn.error')
 
 
+class UpstreamStageError(httpx.HTTPError):
+    """Error público seguro que conserva la etapa exacta de una dependencia."""
+    def __init__(self,stage:str,kind:str,detail:str,status:int|None=None):
+        super().__init__(detail)
+        self.stage=stage
+        self.kind=kind
+        self.detail=detail
+        self.status=status
+
+
 def upstream_error(response:httpx.Response,config:dict) -> str:
     """Extrae únicamente campos diagnósticos; nunca cuerpos completos ni credenciales."""
     try:
@@ -37,14 +47,15 @@ async def post_logged(client:httpx.AsyncClient,stage:str,url:str,config:dict,tra
     except httpx.RequestError as exc:
         logger.error('search trace=%s stage=%s network_error=%s elapsed_ms=%d',
                      trace_id,stage,type(exc).__name__,int((time.monotonic()-start)*1000))
-        raise
+        raise UpstreamStageError(stage,'network_error',type(exc).__name__) from exc
     duration=int((time.monotonic()-start)*1000)
     if response.is_error:
+        detail=upstream_error(response,config)
         logger.error('search trace=%s stage=%s upstream_status=%d elapsed_ms=%d detail=%s',
-                     trace_id,stage,response.status_code,duration,upstream_error(response,config))
+                     trace_id,stage,response.status_code,duration,detail)
+        raise UpstreamStageError(stage,'upstream_error',detail,response.status_code)
     else:
         logger.info('search trace=%s stage=%s upstream_status=%d elapsed_ms=%d',trace_id,stage,response.status_code,duration)
-    response.raise_for_status()
     return response
 
 

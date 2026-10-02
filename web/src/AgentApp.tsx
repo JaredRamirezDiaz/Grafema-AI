@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import './agent.css'
+import { agentApiUrl } from './agent-api'
 import { recipes, rememberService, savedServices, type Recipe, type Recent } from './agent-shared'
+import { ErrorNotice, WaitingNotice, messageFailure, normalizeFailure, responseFailure, type RequestFailure, useWaitSeconds } from './request-feedback'
 
 type Scores = { temas?: Record<string, number>; caracter?: Record<string, number>; momento?: Record<string, number>; enfoque?: Record<string, number>; energia?: { valor?: number } }
 type Song = { id: string; title: string; excerpt: string; lyrics: string; labels?: Scores | null; match_labels?: Scores | null;
@@ -25,8 +27,9 @@ function Evidence({ song, full = false }: { song: Song; full?: boolean }) {
     {full && <div className="lyrics">{song.lyrics}</div>}</>
 }
 
-async function readEvents(response: Response, onEvent: (name: string, data: unknown) => void) {
-  if (!response.ok || !response.body) throw new Error(`El agente respondió ${response.status}. Revisa la configuración.`)
+async function readEvents(response: Response, url: string, onEvent: (name: string, data: unknown) => void) {
+  if (!response.ok) throw await responseFailure(response, 'El agente no pudo crear el servicio.', 'Inicio de la generación')
+  if (!response.body) throw messageFailure('El agente no pudo crear el servicio.', 'Lectura de la respuesta en tiempo real', 'El servidor respondió sin un flujo de datos.', url)
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''
   while (true) {
     const { done, value } = await reader.read()
@@ -58,20 +61,28 @@ export default function AgentApp() {
   const [exploreKey, setExploreKey] = useState<string | null>(null)
   const [previewId, setPreviewId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [connecting, setConnecting] = useState(true)
   const [saving, setSaving] = useState(false)
   const [adminToken, setAdminToken] = useState('')
-  const [error, setError] = useState('')
+  const [error, setError] = useState<RequestFailure | null>(null)
   const [message, setMessage] = useState('')
   const batchDraftId = new URLSearchParams(window.location.search).get('draft')
+  const connectionSeconds = useWaitSeconds(connecting)
+  const generationSeconds = useWaitSeconds(busy)
 
   useEffect(() => {
     setRecent(savedServices())
     let active = true
-    fetch('/api/service').then(response => response.json() as Promise<{ providers: Provider[] }>).then(data => {
+    const url = agentApiUrl('/api/service')
+    fetch(url).then(async response => {
+      if (!response.ok) throw await responseFailure(response, 'No se pudo conectar con el agente.', 'Carga de proveedores y modelos')
+      return response.json() as Promise<{ providers: Provider[] }>
+    }).then(data => {
       if (!active) return
       setProviders(data.providers || [])
       const first = data.providers?.[0]; if (first) { setProvider(first.id); setModel(first.models[0]?.id || '') }
-    }).catch(() => { if (active) setError('No se pudo conectar con el servidor del agente.') })
+    }).catch(reason => { if (active) setError(normalizeFailure(reason, 'No se pudo conectar con el agente.', 'Conexión inicial con Render', url)) })
+      .finally(() => { if (active) setConnecting(false) })
     return () => { active = false }
   }, [])
 
@@ -80,28 +91,33 @@ export default function AgentApp() {
 
   async function generate(event: FormEvent) {
     event.preventDefault(); if (busy || !model) return
-    setBusy(true); setError(''); setMessage(''); setPlan(null); setItems([]); setProgress([])
+    setBusy(true); setError(null); setMessage(''); setPlan(null); setItems([]); setProgress([])
     let completed = false
+    const url = agentApiUrl('/api/service')
     try {
-      const response = await fetch('/api/service', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ theme, focus, specialOccasion, recipe, count, notes, provider, model }) })
-      await readEvents(response, (name, payload) => {
+      await readEvents(response, url, (name, payload) => {
         if (name === 'status') setProgress(current => [...current, payload as Progress])
-        if (name === 'error') throw new Error((payload as { error: string }).error)
+        if (name === 'error') { const failure = payload as { error: string; stage?: string; trace_id?: string; hint?: string }; throw {
+          title: 'El agente no pudo crear el servicio.', stage: failure.stage || 'Generación del plan', detail: failure.error,
+          endpoint: url, traceId: failure.trace_id, hint: failure.hint,
+        } satisfies RequestFailure }
         if (name === 'result') { const result = payload as Plan; completed = true; setPlan(result); setItems(result.items); remember(result)
           setMessage('Borrador guardado. Revisa los cantos antes de aprobar el ejemplo.') }
       })
-      if (!completed) throw new Error('El agente terminó sin guardar una propuesta.')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudo crear el servicio.') }
+      if (!completed) throw messageFailure('El agente no pudo crear el servicio.', 'Finalización del flujo', 'El flujo terminó sin devolver ni guardar una propuesta.', url)
+    } catch (reason) { setError(normalizeFailure(reason, 'El agente no pudo crear el servicio.', 'Conexión con el agente en Render', url)) }
     finally { setBusy(false) }
   }
 
   async function loadRecent(entry: Recent) {
-    setError(''); setMessage('')
+    setError(null); setMessage('')
+    const url = agentApiUrl(`/api/draft?id=${encodeURIComponent(entry.id)}`)
     try {
-      const response = await fetch(`/api/draft?id=${encodeURIComponent(entry.id)}`, { headers: { 'x-edit-token': entry.token, 'x-dataset-admin-token': adminToken } })
+      const response = await fetch(url, { headers: { 'x-edit-token': entry.token, 'x-dataset-admin-token': adminToken } })
+      if (!response.ok) { setError(await responseFailure(response, 'No se pudo recuperar el borrador.', 'Lectura del borrador')); return }
       const data = await response.json() as { error?: string; plan: Plan; request: { theme: string; recipe: Recipe; count: number; notes: string; focus: string; specialOccasion: string }; selections: Selection[]; status: 'draft' | 'reviewed' }
-      if (!response.ok) throw new Error(data.error || 'No se pudo recuperar el borrador.')
       setPlan({ ...data.plan, theme: data.request.theme, recipe: data.request.recipe, draft: { id: entry.id, editToken: entry.token, status: data.status } })
       setItems(data.plan.items.map(original => { const selection = data.selections.find(item => item.key === original.key)
         const song = options(original).find(candidate => candidate.id === selection?.songId) || original.song
@@ -111,22 +127,22 @@ export default function AgentApp() {
       if (entry.token) setRecent(current => current.map(saved => saved.id === entry.id ? { ...saved, recipe: data.request.recipe,
         model: data.plan.model, provider: data.plan.provider } : saved))
       setMessage('Borrador recuperado.')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudo recuperar el borrador.') }
+    } catch (reason) { setError(normalizeFailure(reason, 'No se pudo recuperar el borrador.', 'Conexión con el almacén de borradores', url)) }
   }
 
   async function persist(updated: Item[]) {
     if (!plan || saving) return false
-    setSaving(true); setError(''); setMessage('')
+    setSaving(true); setError(null); setMessage('')
+    const url = agentApiUrl(`/api/draft?id=${encodeURIComponent(plan.draft.id)}`)
     try {
-      const response = await fetch(`/api/draft?id=${encodeURIComponent(plan.draft.id)}`, { method: 'PATCH',
+      const response = await fetch(url, { method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-edit-token': plan.draft.editToken, 'x-dataset-admin-token': adminToken },
         body: JSON.stringify({ selections: updated.map(item => ({ key: item.key, songId: item.song.id, reason: item.reason })) }) })
-      const data = await response.json() as { error?: string }
-      if (!response.ok) throw new Error(data.error || 'No se guardaron los cambios.')
+      if (!response.ok) { setError(await responseFailure(response, 'No se guardaron los cambios.', 'Actualización del borrador')); return false }
       setItems(updated); setPlan(current => current ? { ...current, draft: { ...current.draft, status: 'draft' } } : null)
       setMessage('Cambios guardados en el borrador.')
       return true
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se guardaron los cambios.'); return false }
+    } catch (reason) { setError(normalizeFailure(reason, 'No se guardaron los cambios.', 'Conexión al guardar el borrador', url)); return false }
     finally { setSaving(false) }
   }
 
@@ -142,27 +158,28 @@ export default function AgentApp() {
   async function review() {
     if (!plan || saving) return
     if (!await persist(items)) return
-    setSaving(true); setError(''); setMessage('')
+    setSaving(true); setError(null); setMessage('')
+    const url = agentApiUrl(`/api/draft?id=${encodeURIComponent(plan.draft.id)}`)
     try {
-      const response = await fetch(`/api/draft?id=${encodeURIComponent(plan.draft.id)}`, { method: 'POST',
+      const response = await fetch(url, { method: 'POST',
         headers: { 'x-edit-token': plan.draft.editToken, 'x-dataset-admin-token': adminToken } })
-      const data = await response.json() as { error?: string }
-      if (!response.ok) throw new Error(data.error || 'No se pudo revisar.')
+      if (!response.ok) { setError(await responseFailure(response, 'No se pudo marcar como revisado.', 'Aprobación del borrador')); return }
       setPlan(current => current ? { ...current, draft: { ...current.draft, status: 'reviewed' } } : null)
       setMessage('Servicio revisado. Ya está disponible en el JSONL.')
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudo revisar.') }
+    } catch (reason) { setError(normalizeFailure(reason, 'No se pudo marcar como revisado.', 'Conexión al aprobar el borrador', url)) }
     finally { setSaving(false) }
   }
 
   async function exportDataset() {
-    setError('')
+    setError(null)
+    const endpoint = agentApiUrl('/api/dataset')
     try {
-      const response = await fetch('/api/dataset', { headers: { 'x-dataset-admin-token': adminToken } })
-      if (!response.ok) { const data = await response.json() as { error?: string }; throw new Error(data.error || 'No se pudo exportar.') }
+      const response = await fetch(endpoint, { headers: { 'x-dataset-admin-token': adminToken } })
+      if (!response.ok) { setError(await responseFailure(response, 'No se pudo exportar el dataset.', 'Exportación JSONL')); return }
       const url = URL.createObjectURL(await response.blob())
       const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'grafema-services-reviewed.jsonl'; anchor.click()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
-    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudo exportar.') }
+    } catch (reason) { setError(normalizeFailure(reason, 'No se pudo exportar el dataset.', 'Conexión durante la exportación', endpoint)) }
   }
 
   const explored = items.find(item => item.key === exploreKey)
@@ -183,13 +200,13 @@ export default function AgentApp() {
           <label htmlFor="provider">Proveedor de IA</label><select id="provider" value={provider} onChange={e => { const next = providers.find(option => option.id === e.target.value); if (next) { setProvider(next.id); setModel(next.models[0]?.id || '') } }} disabled={!providers.length}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
           <label htmlFor="model">Modelo</label><select id="model" value={model} onChange={e => setModel(e.target.value)} disabled={!model}>{providers.find(option => option.id === provider)?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
           <label htmlFor="notes">Otras preferencias <span>(opcional)</span></label><textarea id="notes" maxLength={240} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej. evitar cantos muy solemnes" rows={3} />
-          <button className="generate-button" disabled={busy || !model || theme.trim().length < 3}>{busy ? 'Preparando servicio…' : 'Crear y guardar servicio ↗'}</button>
-        </form><p className="form-note">Los borradores se guardan en Supabase. Revisa cada selección antes de aprobar el ejemplo.</p>
+          <button className="generate-button" disabled={busy || connecting || !model || theme.trim().length < 3}>{connecting ? 'Conectando con el agente…' : busy ? 'Preparando servicio…' : 'Crear y guardar servicio ↗'}</button>
+        </form>{connecting && <WaitingNotice seconds={connectionSeconds} service="el agente en Render" action="Conectando con el agente y cargando los modelos…" />}<p className="form-note">Los borradores se guardan en Supabase. Revisa cada selección antes de aprobar el ejemplo.</p>
         {!!recent.length && <section className="recent-drafts"><strong>Servicios guardados en este navegador</strong>{recent.map(entry => <button type="button" key={entry.id} onClick={() => void loadRecent(entry)}>{entry.theme}<small>{recipes.find(option => option.key === entry.recipe)?.title || 'Receta por consultar'} · {entry.date}</small><small>Modelo: {entry.model || 'Consultar servicio'}</small></button>)}</section>}
       </section>
       <section className="agent-output" aria-live="polite">
-        {error && <div className="alert" role="alert">{error}</div>}{message && <div className="success-note" role="status">{message}</div>}
-        {busy && <div className="live-progress" role="status"><span className="spinner" /><h2>Consultas en tiempo real</h2><ol>{progress.map((event, index) => <li key={index}><strong>{event.slot || event.type}</strong> {event.message}{event.query && <small>Consulta: {event.query}</small>}</li>)}</ol></div>}
+        {error && <ErrorNotice failure={error} />}{message && <div className="success-note" role="status">{message}</div>}
+        {busy && <div className="live-progress" role="status">{progress.length === 0 ? <WaitingNotice seconds={generationSeconds} service="el agente en Render" action="Enviando la solicitud al agente…" /> : <><span className="spinner" /><h2>Consultas en tiempo real</h2><ol>{progress.map((event, index) => <li key={index}><strong>{event.slot || event.type}</strong> {event.message}{event.query && <small>Consulta: {event.query}</small>}</li>)}</ol></>}</div>}
         {!plan && !busy && <div className="agent-empty"><span className="agent-empty-icon">✳</span><h2>Tu propuesta aparecerá aquí</h2><p>Describe el servicio o recupera un borrador anterior.</p></div>}
         {plan && <><div className="plan-heading"><div><span className="section-kicker">02 · PROPUESTA EDITABLE</span><h2>{plan.theme}</h2><p>{items.length} cantos · {recipes.find(r => r.key === plan.recipe)?.title}</p></div><span className="model-badge">{plan.provider}: {plan.model}</span></div>
           <p className={`draft-status ${plan.draft.status}`}>{plan.draft.status === 'reviewed' ? '✓ Revisado · incluido en el dataset' : '● Borrador guardado · pendiente de revisión'}</p>

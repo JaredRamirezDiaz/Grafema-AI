@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { ErrorNotice, WaitingNotice, networkFailure, responseFailure, type RequestFailure, useWaitSeconds } from './request-feedback'
 
 type Scores = {temas?:Record<string,number>;caracter?:Record<string,number>;momento?:Record<string,number>;enfoque?:Record<string,number>;energia?:{valor:number}}
 type MatchedSection = {index:number;order:number;type:string;text:string;similarity:number;labels:Scores|null}
@@ -25,36 +26,39 @@ function App() {
   const [songs, setSongs] = useState<Song[]>([])
   const [selected, setSelected] = useState<Song | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<RequestFailure | null>(null)
   const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
   const [recommendLoading, setRecommendLoading] = useState(false)
-  const [recommendError, setRecommendError] = useState('')
+  const [recommendError, setRecommendError] = useState<RequestFailure | null>(null)
   const [mode,setMode] = useState<Mode>('labels')
   const [submittedMode,setSubmittedMode] = useState<Mode>('labels')
   const [intent,setIntent] = useState<SearchResponse['intent']|null>(null)
+  const searchSeconds = useWaitSeconds(loading)
+  const recommendSeconds = useWaitSeconds(recommendLoading)
 
   async function search(text: string) {
     const clean = text.trim()
     if (clean.length < 3 || loading) return
     setQuery(clean)
     setLoading(true)
-    setError('')
+    setError(null)
     setSelected(null)
     setRecommendations(null)
-    setRecommendError('')
+    setRecommendError(null)
+    const url = `${apiBase}/search/enhanced`
     try {
-      const response = await fetch(`${apiBase}/search/enhanced`, {
+      const response = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: clean, limit: 8, mode }),
       })
-      if (!response.ok) throw new Error(`La API respondió con ${response.status}. Comprueba la configuración e inténtalo de nuevo.`)
+      if (!response.ok) { setError(await responseFailure(response, 'No pudimos completar la búsqueda.', 'API de búsqueda')); return }
       const data = await response.json() as SearchResponse
       setSongs(data.results)
       setSubmitted(data.query)
       setSubmittedMode(mode)
       setIntent(data.intent)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Ocurrió un error inesperado.')
+      setError(networkFailure(reason, 'No pudimos completar la búsqueda.', 'Conexión con la API de búsqueda', url))
     } finally {
       setLoading(false)
     }
@@ -63,17 +67,18 @@ function App() {
   async function recommend() {
     if (!submitted || recommendLoading) return
     setRecommendLoading(true)
-    setRecommendError('')
+    setRecommendError(null)
+    const url = `${apiBase}/recommend`
     try {
-      const response = await fetch(`${apiBase}/recommend`, {
+      const response = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: submitted, count: 3 }),
       })
-      if (!response.ok) throw new Error(`La recomendación no está disponible (${response.status}). Intenta de nuevo.`)
+      if (!response.ok) { setRecommendError(await responseFailure(response, 'No pudimos generar recomendaciones.', 'Generación con Llama')); return }
       const data = await response.json() as RecommendResponse
       setRecommendations(data.recommendations)
     } catch (reason) {
-      setRecommendError(reason instanceof Error ? reason.message : 'No pudimos generar recomendaciones.')
+      setRecommendError(networkFailure(reason, 'No pudimos generar recomendaciones.', 'Conexión con la API de recomendaciones', url))
     } finally {
       setRecommendLoading(false)
     }
@@ -104,14 +109,15 @@ function App() {
         </div>
       </section>
       <section className="content" aria-live="polite">
-        {error && <div className="alert" role="alert"><strong>No pudimos completar la búsqueda.</strong> {error}</div>}
+        {error && <ErrorNotice failure={error} />}
         {!submitted && !loading && !error && <div className="welcome"><span className="welcome-mark">✳</span><h2>Busca como lo dirías normalmente</h2><p>El catálogo ya contiene 550 cantos de Grafema. Puedes explorar los resultados sin registrarte ni cargar archivos.</p><a href="/benchmark.html">Conoce cómo se evaluó la búsqueda →</a></div>}
-        {loading && <div className="loading" role="status">Buscando cantos relacionados con tu solicitud…</div>}
+        {loading && <WaitingNotice seconds={searchSeconds} service="la API de búsqueda" action="Buscando cantos relacionados con tu solicitud…" />}
         {submitted && !loading && <>
           <div className="results-heading"><div><span className="section-kicker">RESULTADOS · {modes[submittedMode]}</span><h2>Encontramos {songs.length} cantos</h2><p>Para «{submitted}»{intent && Object.values(intent.labels).flat().length>0 && submittedMode==='labels'?` · etiquetas detectadas: ${Object.values(intent.labels).flat().map(pretty).join(', ')}`:''}</p></div><span className="model-badge">BGE-M3</span></div>
           {!!songs.length && <section className="recommend-panel" aria-label="Selección de cantos con Llama">
             <div className="recommend-top"><div><span className="section-kicker">SEGUNDO PASO · LLAMA 3.2</span><h3>Una selección para tu servicio</h3><p>Llama revisa los ocho cantos recuperados y propone hasta tres con una explicación.</p></div><button type="button" onClick={() => void recommend()} disabled={recommendLoading}>{recommendLoading ? 'Preparando selección…' : recommendations ? 'Generar otra vez' : 'Sugerir cantos'}</button></div>
-            {recommendError && <p className="recommend-error" role="alert">{recommendError}</p>}
+            {recommendLoading && <WaitingNotice seconds={recommendSeconds} service="la API y el modelo" action="Preparando la selección con Llama…" />}
+            {recommendError && <ErrorNotice failure={recommendError} />}
             {recommendations && (recommendations.length ? <div className="recommend-list">{recommendations.map(({song, reason}, index) => <button type="button" key={song.id} onClick={() => setSelected(song)}><span className="recommend-number">{index + 1}</span><span><strong>{song.title}</strong><small>{reason}</small><em>Ver la letra →</em></span></button>)}</div> : <p>No hubo recomendaciones para esta solicitud.</p>)}
             {recommendations && <p className="recommend-note">Los motivos los genera Llama; verifica la letra del canto antes de usarlo.</p>}
           </section>}
