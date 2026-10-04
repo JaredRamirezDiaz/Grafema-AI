@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import './agent.css'
 import { agentApiUrl } from './agent-api'
 import { recipes, rememberService, savedServices, type Recipe, type Recent } from './agent-shared'
+import { AppShell } from './components/app-shell'
 import { ErrorNotice, WaitingNotice, messageFailure, normalizeFailure, responseFailure, type RequestFailure, useWaitSeconds } from './request-feedback'
 
 type Scores = { temas?: Record<string, number>; caracter?: Record<string, number>; momento?: Record<string, number>; enfoque?: Record<string, number>; energia?: { valor?: number } }
@@ -63,10 +64,8 @@ export default function AgentApp() {
   const [busy, setBusy] = useState(false)
   const [connecting, setConnecting] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [adminToken, setAdminToken] = useState('')
   const [error, setError] = useState<RequestFailure | null>(null)
   const [message, setMessage] = useState('')
-  const batchDraftId = new URLSearchParams(window.location.search).get('draft')
   const connectionSeconds = useWaitSeconds(connecting)
   const generationSeconds = useWaitSeconds(busy)
 
@@ -104,7 +103,7 @@ export default function AgentApp() {
           endpoint: url, traceId: failure.trace_id, hint: failure.hint,
         } satisfies RequestFailure }
         if (name === 'result') { const result = payload as Plan; completed = true; setPlan(result); setItems(result.items); remember(result)
-          setMessage('Borrador guardado. Revisa los cantos antes de aprobar el ejemplo.') }
+          setMessage('Propuesta creada. Puedes revisar los cantos y ajustar los motivos.') }
       })
       if (!completed) throw messageFailure('El agente no pudo crear el servicio.', 'Finalización del flujo', 'El flujo terminó sin devolver ni guardar una propuesta.', url)
     } catch (reason) { setError(normalizeFailure(reason, 'El agente no pudo crear el servicio.', 'Conexión con el agente en Render', url)) }
@@ -115,7 +114,7 @@ export default function AgentApp() {
     setError(null); setMessage('')
     const url = agentApiUrl(`/api/draft?id=${encodeURIComponent(entry.id)}`)
     try {
-      const response = await fetch(url, { headers: { 'x-edit-token': entry.token, 'x-dataset-admin-token': adminToken } })
+      const response = await fetch(url, { headers: { 'x-edit-token': entry.token } })
       if (!response.ok) { setError(await responseFailure(response, 'No se pudo recuperar el borrador.', 'Lectura del borrador')); return }
       const data = await response.json() as { error?: string; plan: Plan; request: { theme: string; recipe: Recipe; count: number; notes: string; focus: string; specialOccasion: string }; selections: Selection[]; status: 'draft' | 'reviewed' }
       setPlan({ ...data.plan, theme: data.request.theme, recipe: data.request.recipe, draft: { id: entry.id, editToken: entry.token, status: data.status } })
@@ -126,7 +125,7 @@ export default function AgentApp() {
       setNotes(data.request.notes || ''); setFocus(data.request.focus || ''); setSpecialOccasion(data.request.specialOccasion || '')
       if (entry.token) setRecent(current => current.map(saved => saved.id === entry.id ? { ...saved, recipe: data.request.recipe,
         model: data.plan.model, provider: data.plan.provider } : saved))
-      setMessage('Borrador recuperado.')
+      setMessage('Propuesta recuperada.')
     } catch (reason) { setError(normalizeFailure(reason, 'No se pudo recuperar el borrador.', 'Conexión con el almacén de borradores', url)) }
   }
 
@@ -136,7 +135,7 @@ export default function AgentApp() {
     const url = agentApiUrl(`/api/draft?id=${encodeURIComponent(plan.draft.id)}`)
     try {
       const response = await fetch(url, { method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'x-edit-token': plan.draft.editToken, 'x-dataset-admin-token': adminToken },
+        headers: { 'Content-Type': 'application/json', 'x-edit-token': plan.draft.editToken },
         body: JSON.stringify({ selections: updated.map(item => ({ key: item.key, songId: item.song.id, reason: item.reason })) }) })
       if (!response.ok) { setError(await responseFailure(response, 'No se guardaron los cambios.', 'Actualización del borrador')); return false }
       setItems(updated); setPlan(current => current ? { ...current, draft: { ...current.draft, status: 'draft' } } : null)
@@ -155,69 +154,54 @@ export default function AgentApp() {
     void persist(next); setExploreKey(null)
   }
 
-  async function review() {
-    if (!plan || saving) return
-    if (!await persist(items)) return
-    setSaving(true); setError(null); setMessage('')
-    const url = agentApiUrl(`/api/draft?id=${encodeURIComponent(plan.draft.id)}`)
-    try {
-      const response = await fetch(url, { method: 'POST',
-        headers: { 'x-edit-token': plan.draft.editToken, 'x-dataset-admin-token': adminToken } })
-      if (!response.ok) { setError(await responseFailure(response, 'No se pudo marcar como revisado.', 'Aprobación del borrador')); return }
-      setPlan(current => current ? { ...current, draft: { ...current.draft, status: 'reviewed' } } : null)
-      setMessage('Servicio revisado. Ya está disponible en el JSONL.')
-    } catch (reason) { setError(normalizeFailure(reason, 'No se pudo marcar como revisado.', 'Conexión al aprobar el borrador', url)) }
-    finally { setSaving(false) }
-  }
-
-  async function exportDataset() {
-    setError(null)
-    const endpoint = agentApiUrl('/api/dataset')
-    try {
-      const response = await fetch(endpoint, { headers: { 'x-dataset-admin-token': adminToken } })
-      if (!response.ok) { setError(await responseFailure(response, 'No se pudo exportar el dataset.', 'Exportación JSONL')); return }
-      const url = URL.createObjectURL(await response.blob())
-      const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'grafema-services-reviewed.jsonl'; anchor.click()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
-    } catch (reason) { setError(normalizeFailure(reason, 'No se pudo exportar el dataset.', 'Conexión durante la exportación', endpoint)) }
-  }
-
   const explored = items.find(item => item.key === exploreKey)
   const candidates = explored && plan ? options(plan.items.find(item => item.key === explored.key)!) : []
   const preview = candidates.find(song => song.id === previewId) || explored?.song
 
-  return <>
-    <header className="topbar"><a className="wordmark" href="/">GRAFEMA <b>AI</b></a><nav><a href="/">Buscar cantos ↗</a> · <a href="/benchmark.html">Benchmark ↗</a> · <a href="/lotes.html">Lotes ↗</a></nav></header>
+
+  const options = {
+    'theme': { label: 'Tema', value: theme, setter: setTheme, placeholder: 'Describe el mensaje o la ocasión', minLength: 3, maxLength: 240, visible: true },
+    'focus': { label: 'Enfoque', value: focus, setter: setFocus, placeholder: 'Ej. congregacional, testimonial', minLength: 0, maxLength: 120, visible: false },
+    'specialOccasion': { label: 'Ocasión especial', value: specialOccasion, setter: setSpecialOccasion, placeholder: 'Ej. Navidad, bautismo, aniversario', minLength: 0, maxLength: 120, visible: false },
+    'recipe': { label: 'Recorrido de energía', value: recipe, setter: setRecipe, placeholder: '', minLength: 0, maxLength: 0, visible: true },
+    'count': { label: 'Número de cantos', value: count, setter: setCount, placeholder: '', minLength: 2, maxLength: 9, default: 5, visible: false },
+    'notes': { label: 'Otras preferencias', value: notes, setter: setNotes, placeholder: 'Ej. evitar cantos muy solemnes', minLength: 0, maxLength: 240, visible: true },
+    'provider': { label: 'Proveedor de IA', value: provider, setter: setProvider, placeholder: '', minLength: 0, maxLength: 0, visible: true },
+    'model': { label: 'Modelo', value: model, setter: setModel, placeholder: '', minLength: 0, maxLength: 0, visible: true },
+  }
+
+  return <AppShell>
     <main className="agent-shell">
-      <div className="agent-heading"><span className="eyebrow">AGENTE DE SERVICIOS · DATASET SUPERVISADO</span><h1>Diseña un servicio<br /><em>con intención.</em></h1><p>El agente consulta Grafema y propone un orden; tú lo corriges. Cada propuesta queda guardada para preparar ejemplos revisados de fine tuning.</p></div>
-      <div className="agent-layout"><section className="agent-form-card" aria-label="Preferencias del servicio">
-        <span className="section-kicker">01 · CONFIGURACIÓN</span><h2>¿Qué deseas comunicar?</h2>{batchDraftId && <div className="batch-open"><p>Servicio del lote {batchDraftId}. Escribe el token de administración para abrirlo y revisarlo, incluso si se cerró la pestaña que lo generó.</p><input type="password" autoComplete="off" aria-label="Token de administración del lote" value={adminToken} onChange={event => setAdminToken(event.target.value)} placeholder="DATASET_ADMIN_TOKEN" /><button type="button" disabled={!adminToken} onClick={() => void loadRecent({ id: batchDraftId, token: '', theme: '', date: '' })}>Abrir servicio del lote</button></div>}<form onSubmit={generate}>
-          <label htmlFor="theme">Tema</label><input id="theme" value={theme} onChange={e => setTheme(e.target.value)} minLength={3} maxLength={240} required />
-          <label htmlFor="focus">Enfoque <span>(opcional)</span></label><input id="focus" value={focus} onChange={e => setFocus(e.target.value)} maxLength={120} placeholder="Ej. congregacional, testimonial" />
-          <label htmlFor="occasion">Ocasión especial <span>(opcional)</span></label><input id="occasion" value={specialOccasion} onChange={e => setSpecialOccasion(e.target.value)} maxLength={120} placeholder="Ej. Navidad, bautismo, aniversario" />
-          <label>Recorrido de energía</label><div className="recipe-list">{recipes.map(option => <button className={`recipe ${option.key === recipe ? 'is-active' : ''}`} type="button" aria-pressed={recipe === option.key} key={option.key} onClick={() => setRecipe(option.key)}><span><strong>{option.title}</strong></span><span className="energy-chart" aria-hidden="true">{option.energies.map((level, i) => <i key={i} style={{ height: `${level * 17}%` }} />)}</span></button>)}</div>
-          <label htmlFor="count">Número de cantos: <strong>{count}</strong></label><input id="count" type="range" min={2} max={9} value={count} onChange={e => setCount(Number(e.target.value))} />
-          <label htmlFor="provider">Proveedor de IA</label><select id="provider" value={provider} onChange={e => { const next = providers.find(option => option.id === e.target.value); if (next) { setProvider(next.id); setModel(next.models[0]?.id || '') } }} disabled={!providers.length}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
-          <label htmlFor="model">Modelo</label><select id="model" value={model} onChange={e => setModel(e.target.value)} disabled={!model}>{providers.find(option => option.id === provider)?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
-          <label htmlFor="notes">Otras preferencias <span>(opcional)</span></label><textarea id="notes" maxLength={240} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej. evitar cantos muy solemnes" rows={3} />
+      <div className="agent-heading"><span className="eyebrow">AGENTE DE REPERTORIOS · DEMOSTRACIÓN</span><h1>Diseña un repertorio<br /><em>con intención.</em></h1><p>Describe el mensaje o la ocasión. El agente consulta el catálogo y propone una secuencia de cantos que puedes revisar y ajustar.</p></div>
+      <div className="agent-layout"><section className="agent-form-card" aria-label="Preferencias del repertorio">
+        <span className="section-kicker">01 · CONFIGURACIÓN</span><h2>Configuración del repertorio</h2><form onSubmit={generate}>
+          {Object.entries(options).filter(([, option]) => option.visible).map(([key, option]) => {
+            if (key === 'recipe') return <div key={key}><label>{option.label}</label><div className="recipe-list">{recipes.map(option => <button className={`recipe ${option.key === recipe ? 'is-active' : ''}`} type="button" aria-pressed={recipe === option.key} key={option.key} onClick={() => setRecipe(option.key)}><span><strong>{option.title}</strong></span><span className="energy-chart" aria-hidden="true">{option.energies.map((level, i) => <i key={i} style={{ height: `${level * 17}%` }} />)}</span></button>)}</div></div>
+            if (key === 'count') return <div key={key}><label htmlFor={key}>{option.label}: <strong>{count}</strong></label><input id={key} type="range" min={2} max={9} value={count} onChange={e => setCount(Number(e.target.value))} /></div>
+            if (key === 'provider') return <div key={key}><label htmlFor={key}>{option.label}</label><select id={key} value={provider} onChange={e => { const next = providers.find(option => option.id === e.target.value); if (next) { setProvider(next.id); setModel(next.models[0]?.id || '') } }} disabled={!providers.length}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+            if (key === 'model') return <div key={key}><label htmlFor={key}>{option.label}</label><select id={key} value={model} onChange={e => setModel(e.target.value)} disabled={!model}>{providers.find(option => option.id === provider)?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+            if (key === 'notes') return <div key={key}><label htmlFor={key}>{option.label} <span>(opcional)</span></label><textarea id={key} maxLength={option.maxLength} value={notes} onChange={e => setNotes(e.target.value)} placeholder={option.placeholder} rows={3} /></div>
+            return <div key={key}><label htmlFor={key}>{option.label} {option.minLength > 0 && <span>(opcional)</span>}</label><input id={key} value={option.value} onChange={e => option.setter(e.target.value)} maxLength={option.maxLength} placeholder={option.placeholder} /></div>
+          })}
+          
           <button className="generate-button" disabled={busy || connecting || !model || theme.trim().length < 3}>{connecting ? 'Conectando con el agente…' : busy ? 'Preparando servicio…' : 'Crear y guardar servicio ↗'}</button>
-        </form>{connecting && <WaitingNotice seconds={connectionSeconds} service="el agente en Render" action="Conectando con el agente y cargando los modelos…" />}<p className="form-note">Los borradores se guardan en Supabase. Revisa cada selección antes de aprobar el ejemplo.</p>
-        {!!recent.length && <section className="recent-drafts"><strong>Servicios guardados en este navegador</strong>{recent.map(entry => <button type="button" key={entry.id} onClick={() => void loadRecent(entry)}>{entry.theme}<small>{recipes.find(option => option.key === entry.recipe)?.title || 'Receta por consultar'} · {entry.date}</small><small>Modelo: {entry.model || 'Consultar servicio'}</small></button>)}</section>}
+        </form>{connecting && <WaitingNotice seconds={connectionSeconds} service="el agente en Render" action="Conectando con el agente y cargando los modelos…" />}<p className="form-note">Esta es una demostración: revisa siempre las letras y el contexto antes de utilizar una propuesta.</p>
+        {!!recent.length && <section className="recent-drafts"><strong>Propuestas recientes en este navegador</strong>{recent.map(entry => <button type="button" key={entry.id} onClick={() => void loadRecent(entry)}>{entry.theme}<small>{recipes.find(option => option.key === entry.recipe)?.title || 'Recorrido por consultar'} · {entry.date}</small><small>Modelo: {entry.model || 'Consultar propuesta'}</small></button>)}</section>}
       </section>
       <section className="agent-output" aria-live="polite">
         {error && <ErrorNotice failure={error} />}{message && <div className="success-note" role="status">{message}</div>}
         {busy && <div className="live-progress" role="status">{progress.length === 0 ? <WaitingNotice seconds={generationSeconds} service="el agente en Render" action="Enviando la solicitud al agente…" /> : <><span className="spinner" /><h2>Consultas en tiempo real</h2><ol>{progress.map((event, index) => <li key={index}><strong>{event.slot || event.type}</strong> {event.message}{event.query && <small>Consulta: {event.query}</small>}</li>)}</ol></>}</div>}
-        {!plan && !busy && <div className="agent-empty"><span className="agent-empty-icon">✳</span><h2>Tu propuesta aparecerá aquí</h2><p>Describe el servicio o recupera un borrador anterior.</p></div>}
-        {plan && <><div className="plan-heading"><div><span className="section-kicker">02 · PROPUESTA EDITABLE</span><h2>{plan.theme}</h2><p>{items.length} cantos · {recipes.find(r => r.key === plan.recipe)?.title}</p></div><span className="model-badge">{plan.provider}: {plan.model}</span></div>
-          <p className={`draft-status ${plan.draft.status}`}>{plan.draft.status === 'reviewed' ? '✓ Revisado · incluido en el dataset' : '● Borrador guardado · pendiente de revisión'}</p>
+        {!plan && !busy && <div className="agent-empty"><span className="agent-empty-icon">✳</span><h2>Tu propuesta aparecerá aquí</h2><p>Describe lo que necesitas o abre una propuesta reciente.</p></div>}
+        {plan && <><div className="plan-heading"><div><span className="section-kicker">02 · PROPUESTA EDITABLE</span><h2>{plan.theme}</h2><p>{items.length} cantos · {recipes.find(r => r.key === plan.recipe)?.title}</p></div></div>
+          <p className="draft-status reviewed">✓ Propuesta generada · editable en esta demostración</p>
           {plan.missingSlots.length > 0 && <p className="alert">Sin resultados para: {plan.missingSlots.join(', ')}.</p>}
           <div className="plan-list">{items.map((item, index) => <article className="plan-item" key={item.key}><div className="plan-step"><span>{String(index + 1).padStart(2, '0')}</span><i /></div><div className="plan-content"><div className="plan-position"><span>{item.slot.title}</span><span>Energía objetivo {item.slot.targetEnergy}/5</span></div><h3>{item.song.title}</h3><Evidence song={item.song} /><label className="swap-label" htmlFor={`reason-${item.key}`}>Motivo de selección {item.reason.trim().length < 12 && <em>· completa antes de revisar</em>}</label><textarea id={`reason-${item.key}`} value={item.reason} rows={2} maxLength={400} onChange={event => setItems(current => current.map(entry => entry.key === item.key ? { ...entry, reason: event.target.value } : entry))} /><button type="button" className="browse-button" onClick={() => { setExploreKey(item.key); setPreviewId(item.song.id) }}>Explorar alternativas con letra y etiquetas ↗</button></div></article>)}</div>
           <button type="button" className="save-motives" disabled={saving} onClick={() => void persist(items)}>{saving ? 'Guardando…' : 'Guardar motivos editados'}</button>
           <details className="agent-trace"><summary>Ver búsquedas realizadas ({plan.searches.length})</summary><ol>{plan.searches.map((trace, index) => <li key={index}><strong>{trace.slot}</strong> · {trace.query} <small>({trace.count} candidatos)</small></li>)}</ol></details>
-          <section className="dataset-actions"><span className="section-kicker">03 · DATASET PARA FINE TUNING</span><p>Revisa los motivos y los cantos. El JSONL incluye solo servicios aprobados.</p><label htmlFor="admin-token">Token de revisión</label><input id="admin-token" type="password" autoComplete="off" value={adminToken} onChange={event => setAdminToken(event.target.value)} placeholder="DATASET_ADMIN_TOKEN" /><div><button type="button" disabled={!adminToken || saving || busy} onClick={() => void review()}>Marcar como revisado</button><button type="button" disabled={!adminToken || saving} onClick={() => void exportDataset()}>Descargar JSONL ↗</button></div></section>
+          <p className="demo-caution">La propuesta es una ayuda para explorar el catálogo; la selección final corresponde al equipo responsable de música de cada comunidad.</p>
         </>}
       </section></div>
       {explored && preview && <div className="candidate-overlay" role="dialog" aria-modal="true" aria-label={`Alternativas para ${explored.slot.title}`}><div className="candidate-modal"><header><div><span className="section-kicker">EXPLORAR ALTERNATIVAS · {explored.slot.title.toUpperCase()}</span><h2>Elige con la letra a la vista</h2></div><button type="button" onClick={() => setExploreKey(null)} aria-label="Cerrar">✕</button></header><div className="candidate-layout"><div className="candidate-list">{candidates.map(candidate => { const occupied = items.some(item => item.key !== explored.key && item.song.id === candidate.id); return <button type="button" key={candidate.id} disabled={occupied} className={preview.id === candidate.id ? 'active' : ''} onClick={() => setPreviewId(candidate.id)}><strong>{candidate.title}</strong><small>{typeof candidate.labels?.energia?.valor === 'number' ? `Energía ${candidate.labels.energia.valor.toFixed(1)}/5` : 'Energía sin estimar'}{occupied ? ' · ya usado' : ''}</small><span>{Object.keys(candidate.match_labels?.temas || candidate.labels?.temas || {}).slice(0, 3).join(' · ').replaceAll('_', ' ')}</span></button> })}</div><div className="candidate-detail"><h3>{preview.title}</h3><Evidence song={preview} full /><button type="button" disabled={saving || items.some(item => item.key !== explored.key && item.song.id === preview.id) || preview.id === explored.song.id} onClick={() => changeSong(explored, preview)}>{preview.id === explored.song.id ? 'Canto actual' : 'Usar este canto'}</button></div></div></div></div>}
-    </main><footer><span>Grafema AI · Dataset supervisado de servicios</span><a href="/">Volver al buscador</a></footer>
-  </>
+    </main><footer><span>Grafema AI · Agente demostrativo de repertorios</span><a href="/informacion.html">Cómo funciona esta demostración</a></footer>
+  </AppShell>
 }

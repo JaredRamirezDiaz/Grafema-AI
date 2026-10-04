@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { AppShell } from './components/app-shell'
 import { ErrorNotice, WaitingNotice, networkFailure, responseFailure, type RequestFailure, useWaitSeconds } from './request-feedback'
 
 type Scores = {temas?:Record<string,number>;caracter?:Record<string,number>;momento?:Record<string,number>;enfoque?:Record<string,number>;energia?:{valor:number}}
@@ -13,8 +14,6 @@ const examples = [
   'Cantos que anuncien la resurrección de Jesús',
 ]
 const apiBase = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
-const modes = {song:'Canción completa',combined:'Canción y secciones',labels:'Canción, secciones y etiquetas'} as const
-type Mode = keyof typeof modes
 const pretty = (value:string) => value.replaceAll('_',' ').replace(/^\w/,character=>character.toUpperCase())
 function topTags(scores:Scores|null|undefined, group:keyof Omit<Scores,'energia'>, count=3) {
   return Object.entries(scores?.[group]||{}).filter(([,score])=>score>=.65).sort((a,b)=>b[1]-a[1]).slice(0,count)
@@ -30,8 +29,6 @@ function App() {
   const [recommendations, setRecommendations] = useState<Recommendation[] | null>(null)
   const [recommendLoading, setRecommendLoading] = useState(false)
   const [recommendError, setRecommendError] = useState<RequestFailure | null>(null)
-  const [mode,setMode] = useState<Mode>('labels')
-  const [submittedMode,setSubmittedMode] = useState<Mode>('labels')
   const [intent,setIntent] = useState<SearchResponse['intent']|null>(null)
   const searchSeconds = useWaitSeconds(loading)
   const recommendSeconds = useWaitSeconds(recommendLoading)
@@ -49,13 +46,12 @@ function App() {
     try {
       const response = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: clean, limit: 8, mode }),
+        body: JSON.stringify({ query: clean, limit: 8, mode: 'labels' }),
       })
       if (!response.ok) { setError(await responseFailure(response, 'No pudimos completar la búsqueda.', 'API de búsqueda')); return }
       const data = await response.json() as SearchResponse
       setSongs(data.results)
       setSubmitted(data.query)
-      setSubmittedMode(mode)
       setIntent(data.intent)
     } catch (reason) {
       setError(networkFailure(reason, 'No pudimos completar la búsqueda.', 'Conexión con la API de búsqueda', url))
@@ -89,8 +85,7 @@ function App() {
     void search(query)
   }
 
-  return <>
-    <header className="topbar"><a className="wordmark" href="/">GRAFEMA <b>AI</b></a><nav><a href="/agente.html">Crear servicio ↗</a> · <a href="/benchmark.html">Ver benchmark ↗</a></nav></header>
+  return <AppShell>
     <main>
       <section className="hero">
         <div className="glow" aria-hidden="true" />
@@ -105,15 +100,15 @@ function App() {
             <button disabled={loading || query.trim().length < 3}>{loading ? 'Buscando…' : 'Buscar cantos'}</button>
           </form>
           <div className="suggestions"><span>Prueba con:</span>{examples.map(example => <button key={example} type="button" onClick={() => void search(example)} disabled={loading}>{example}</button>)}</div>
-          <div className="search-modes" role="group" aria-label="Modo de búsqueda">{(Object.entries(modes) as [Mode,string][]).map(([key,label])=><button key={key} type="button" className={mode===key?'active':''} aria-pressed={mode===key} onClick={()=>setMode(key)}>{label}</button>)}</div>
+          <p className="search-note">La demo compara el significado de la consulta con letras, secciones y etiquetas del catálogo.</p>
         </div>
       </section>
       <section className="content" aria-live="polite">
         {error && <ErrorNotice failure={error} />}
-        {!submitted && !loading && !error && <div className="welcome"><span className="welcome-mark">✳</span><h2>Busca como lo dirías normalmente</h2><p>El catálogo ya contiene 550 cantos de Grafema. Puedes explorar los resultados sin registrarte ni cargar archivos.</p><a href="/benchmark.html">Conoce cómo se evaluó la búsqueda →</a></div>}
+        {!submitted && !loading && !error && <div className="welcome"><span className="welcome-mark">✳</span><h2>Busca como lo dirías normalmente</h2><p>El catálogo ya contiene 550 cantos de Grafema. Puedes explorar los resultados sin registrarte ni cargar archivos.</p><a href="/informacion.html">Conoce el contexto y cómo funciona →</a></div>}
         {loading && <WaitingNotice seconds={searchSeconds} service="la API de búsqueda" action="Buscando cantos relacionados con tu solicitud…" />}
         {submitted && !loading && <>
-          <div className="results-heading"><div><span className="section-kicker">RESULTADOS · {modes[submittedMode]}</span><h2>Encontramos {songs.length} cantos</h2><p>Para «{submitted}»{intent && Object.values(intent.labels).flat().length>0 && submittedMode==='labels'?` · etiquetas detectadas: ${Object.values(intent.labels).flat().map(pretty).join(', ')}`:''}</p></div><span className="model-badge">BGE-M3</span></div>
+          <div className="results-heading"><div><span className="section-kicker">RESULTADOS · BÚSQUEDA SEMÁNTICA</span><h2>Encontramos {songs.length} cantos</h2><p>Para «{submitted}»{intent && Object.values(intent.labels).flat().length>0?` · temas detectados: ${Object.values(intent.labels).flat().map(pretty).join(', ')}`:''}</p></div><span className="model-badge">BGE-M3</span></div>
           {!!songs.length && <section className="recommend-panel" aria-label="Selección de cantos con Llama">
             <div className="recommend-top"><div><span className="section-kicker">SEGUNDO PASO · LLAMA 3.2</span><h3>Una selección para tu servicio</h3><p>Llama revisa los ocho cantos recuperados y propone hasta tres con una explicación.</p></div><button type="button" onClick={() => void recommend()} disabled={recommendLoading}>{recommendLoading ? 'Preparando selección…' : recommendations ? 'Generar otra vez' : 'Sugerir cantos'}</button></div>
             {recommendLoading && <WaitingNotice seconds={recommendSeconds} service="la API y el modelo" action="Preparando la selección con Llama…" />}
@@ -128,8 +123,8 @@ function App() {
         </>}
       </section>
     </main>
-    <footer><span>Grafema AI · Proyecto personal para apoyar a mi iglesia</span><a href="/benchmark.html">Metodología y resultados del benchmark</a></footer>
-  </>
+    <footer><span>Grafema AI · IA aplicada a un catálogo musical cristiano</span><a href="/informacion.html">Conoce el proyecto y su contexto</a></footer>
+  </AppShell>
 }
 
 export default App

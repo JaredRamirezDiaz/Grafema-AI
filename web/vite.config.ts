@@ -4,5 +4,5 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: { proxy: { '/api': 'http://localhost:8787' } },
-  build: { rollupOptions: { input: { main: 'index.html', agent: 'agente.html', batch: 'lotes.html' } } },
+  build: { rollupOptions: { input: { main: 'index.html', agent: 'agente.html', info: 'informacion.html' } } },
 })
