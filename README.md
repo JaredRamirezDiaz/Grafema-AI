@@ -15,6 +15,9 @@
   <a href="https://grafema-ai.vercel.app/"><strong>Visitar la demostración pública →</strong></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/JaredRamirezDiaz/Grafema-AI"><img src="https://img.shields.io/badge/GitHub-Repositorio-181717?logo=github&logoColor=white" alt="Repositorio en GitHub" /></a>
+  <br>
+  <br>
+<a href="https://huggingface.co/JaredRamirezDiaz/grafema-tinyllama-servicios">Link al modelo fine-tunned (HF)</a>
 </p>
 
 
