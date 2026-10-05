@@ -1,5 +1,5 @@
 import { cva } from 'class-variance-authority'
-import { ExternalLink, Info, Search, Sparkles } from 'lucide-react'
+import { Info, Search, Sparkles } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '../lib/utils'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip'
