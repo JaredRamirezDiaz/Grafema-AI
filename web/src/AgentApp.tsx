@@ -15,7 +15,12 @@ type Plan = { theme: string; recipe: Recipe; provider: string; model: string; se
   items: Item[]; missingSlots: string[]; draft: { id: string; editToken: string; status: 'draft' | 'reviewed' } }
 type Provider = { id: 'cloudflare' | 'openrouter'; label: string; models: { id: string; label: string }[] }
 type Progress = { type: string; slot?: string; query?: string; count?: number; message: string }
-const options = (item: Item) => [item.song, ...item.alternatives]
+const songOptions = (item: Item) => [item.song, ...item.alternatives]
+const PUBLIC_DEMO_DEFAULTS = {
+  focus: '',
+  specialOccasion: '',
+  count: 5,
+} as const
 
 function Evidence({ song, full = false }: { song: Song; full?: boolean }) {
   const scores = song.match_labels || song.labels
@@ -47,10 +52,7 @@ async function readEvents(response: Response, url: string, onEvent: (name: strin
 
 export default function AgentApp() {
   const [theme, setTheme] = useState('Esperanza en medio de las dificultades')
-  const [focus, setFocus] = useState('')
-  const [specialOccasion, setSpecialOccasion] = useState('')
   const [recipe, setRecipe] = useState<Recipe>('descendente')
-  const [count, setCount] = useState(7)
   const [notes, setNotes] = useState('')
   const [providers, setProviders] = useState<Provider[]>([])
   const [provider, setProvider] = useState<Provider['id']>('cloudflare')
@@ -95,7 +97,7 @@ export default function AgentApp() {
     const url = agentApiUrl('/api/service')
     try {
       const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ theme, focus, specialOccasion, recipe, count, notes, provider, model }) })
+        body: JSON.stringify({ theme, recipe, notes, provider, model, ...PUBLIC_DEMO_DEFAULTS }) })
       await readEvents(response, url, (name, payload) => {
         if (name === 'status') setProgress(current => [...current, payload as Progress])
         if (name === 'error') { const failure = payload as { error: string; stage?: string; trace_id?: string; hint?: string }; throw {
@@ -119,10 +121,9 @@ export default function AgentApp() {
       const data = await response.json() as { error?: string; plan: Plan; request: { theme: string; recipe: Recipe; count: number; notes: string; focus: string; specialOccasion: string }; selections: Selection[]; status: 'draft' | 'reviewed' }
       setPlan({ ...data.plan, theme: data.request.theme, recipe: data.request.recipe, draft: { id: entry.id, editToken: entry.token, status: data.status } })
       setItems(data.plan.items.map(original => { const selection = data.selections.find(item => item.key === original.key)
-        const song = options(original).find(candidate => candidate.id === selection?.songId) || original.song
-        return { ...original, song, reason: selection?.reason ?? original.reason, alternatives: options(original).filter(candidate => candidate.id !== song.id) } }))
-      setTheme(data.request.theme); setRecipe(data.request.recipe); setCount(data.request.count)
-      setNotes(data.request.notes || ''); setFocus(data.request.focus || ''); setSpecialOccasion(data.request.specialOccasion || '')
+        const song = songOptions(original).find(candidate => candidate.id === selection?.songId) || original.song
+        return { ...original, song, reason: selection?.reason ?? original.reason, alternatives: songOptions(original).filter(candidate => candidate.id !== song.id) } }))
+      setTheme(data.request.theme); setRecipe(data.request.recipe); setNotes(data.request.notes || '')
       if (entry.token) setRecent(current => current.map(saved => saved.id === entry.id ? { ...saved, recipe: data.request.recipe,
         model: data.plan.model, provider: data.plan.provider } : saved))
       setMessage('Propuesta recuperada.')
@@ -150,40 +151,29 @@ export default function AgentApp() {
     const original = plan.items.find(entry => entry.key === item.key)!
     const next = items.map(entry => entry.key === item.key ? { ...entry, song: replacement,
       reason: replacement.id === original.song.id ? original.reason : '',
-      alternatives: options(original).filter(song => song.id !== replacement.id) } : entry)
+      alternatives: songOptions(original).filter(song => song.id !== replacement.id) } : entry)
     void persist(next); setExploreKey(null)
   }
 
   const explored = items.find(item => item.key === exploreKey)
-  const candidates = explored && plan ? options(plan.items.find(item => item.key === explored.key)!) : []
+  const candidates = explored && plan ? songOptions(plan.items.find(item => item.key === explored.key)!) : []
   const preview = candidates.find(song => song.id === previewId) || explored?.song
-
-
-  const options = {
-    'theme': { label: 'Tema', value: theme, setter: setTheme, placeholder: 'Describe el mensaje o la ocasión', minLength: 3, maxLength: 240, visible: true },
-    'focus': { label: 'Enfoque', value: focus, setter: setFocus, placeholder: 'Ej. congregacional, testimonial', minLength: 0, maxLength: 120, visible: false },
-    'specialOccasion': { label: 'Ocasión especial', value: specialOccasion, setter: setSpecialOccasion, placeholder: 'Ej. Navidad, bautismo, aniversario', minLength: 0, maxLength: 120, visible: false },
-    'recipe': { label: 'Recorrido de energía', value: recipe, setter: setRecipe, placeholder: '', minLength: 0, maxLength: 0, visible: true },
-    'count': { label: 'Número de cantos', value: count, setter: setCount, placeholder: '', minLength: 2, maxLength: 9, default: 5, visible: false },
-    'notes': { label: 'Otras preferencias', value: notes, setter: setNotes, placeholder: 'Ej. evitar cantos muy solemnes', minLength: 0, maxLength: 240, visible: true },
-    'provider': { label: 'Proveedor de IA', value: provider, setter: setProvider, placeholder: '', minLength: 0, maxLength: 0, visible: true },
-    'model': { label: 'Modelo', value: model, setter: setModel, placeholder: '', minLength: 0, maxLength: 0, visible: true },
-  }
+  const hasSingleProviderAndModel = providers.length === 1 && providers[0].models.length === 1
 
   return <AppShell>
     <main className="agent-shell">
       <div className="agent-heading"><span className="eyebrow">AGENTE DE REPERTORIOS · DEMOSTRACIÓN</span><h1>Diseña un repertorio<br /><em>con intención.</em></h1><p>Describe el mensaje o la ocasión. El agente consulta el catálogo y propone una secuencia de cantos que puedes revisar y ajustar.</p></div>
       <div className="agent-layout"><section className="agent-form-card" aria-label="Preferencias del repertorio">
         <span className="section-kicker">01 · CONFIGURACIÓN</span><h2>Configuración del repertorio</h2><form onSubmit={generate}>
-          {Object.entries(options).filter(([, option]) => option.visible).map(([key, option]) => {
-            if (key === 'recipe') return <div key={key}><label>{option.label}</label><div className="recipe-list">{recipes.map(option => <button className={`recipe ${option.key === recipe ? 'is-active' : ''}`} type="button" aria-pressed={recipe === option.key} key={option.key} onClick={() => setRecipe(option.key)}><span><strong>{option.title}</strong></span><span className="energy-chart" aria-hidden="true">{option.energies.map((level, i) => <i key={i} style={{ height: `${level * 17}%` }} />)}</span></button>)}</div></div>
-            if (key === 'count') return <div key={key}><label htmlFor={key}>{option.label}: <strong>{count}</strong></label><input id={key} type="range" min={2} max={9} value={count} onChange={e => setCount(Number(e.target.value))} /></div>
-            if (key === 'provider') return <div key={key}><label htmlFor={key}>{option.label}</label><select id={key} value={provider} onChange={e => { const next = providers.find(option => option.id === e.target.value); if (next) { setProvider(next.id); setModel(next.models[0]?.id || '') } }} disabled={!providers.length}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
-            if (key === 'model') return <div key={key}><label htmlFor={key}>{option.label}</label><select id={key} value={model} onChange={e => setModel(e.target.value)} disabled={!model}>{providers.find(option => option.id === provider)?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
-            if (key === 'notes') return <div key={key}><label htmlFor={key}>{option.label} <span>(opcional)</span></label><textarea id={key} maxLength={option.maxLength} value={notes} onChange={e => setNotes(e.target.value)} placeholder={option.placeholder} rows={3} /></div>
-            return <div key={key}><label htmlFor={key}>{option.label} {option.minLength > 0 && <span>(opcional)</span>}</label><input id={key} value={option.value} onChange={e => option.setter(e.target.value)} maxLength={option.maxLength} placeholder={option.placeholder} /></div>
-          })}
-          
+          <div><label htmlFor="theme">Tema</label><input id="theme" required minLength={3} maxLength={240} value={theme} onChange={event => setTheme(event.target.value)} placeholder="Describe el mensaje o la ocasión" /></div>
+          <div><label>Recorrido de energía</label><div className="recipe-list">{recipes.map(option => <button className={`recipe ${option.key === recipe ? 'is-active' : ''}`} type="button" aria-pressed={recipe === option.key} key={option.key} onClick={() => setRecipe(option.key)}><span><strong>{option.title}</strong></span><span className="energy-chart" aria-hidden="true">{option.energies.map((level, index) => <i key={index} style={{ height: `${level * 17}%` }} />)}</span></button>)}</div></div>
+          <div><label htmlFor="notes">Otras preferencias <span>(opcional)</span></label><textarea id="notes" maxLength={240} value={notes} onChange={event => setNotes(event.target.value)} placeholder="Ej. evitar cantos muy solemnes" rows={3} /></div>
+          {!hasSingleProviderAndModel && <>
+          <div><label htmlFor="provider">Proveedor de IA</label><select id="provider" value={provider} onChange={event => { const next = providers.find(option => option.id === event.target.value); if (next) { setProvider(next.id); setModel(next.models[0]?.id || '') } }} disabled={!providers.length}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+          <div><label htmlFor="model">Modelo</label><select id="model" value={model} onChange={event => setModel(event.target.value)} disabled={!model}>{providers.find(option => option.id === provider)?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+            <div><label htmlFor="provider">Proveedor de IA</label><select id="provider" value={provider} onChange={event => { const next = providers.find(option => option.id === event.target.value); if (next) { setProvider(next.id); setModel(next.models[0]?.id || '') } }} disabled={!providers.length}>{providers.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+            <div><label htmlFor="model">Modelo</label><select id="model" value={model} onChange={event => setModel(event.target.value)} disabled={!model}>{providers.find(option => option.id === provider)?.models.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></div>
+          </>}
           <button className="generate-button" disabled={busy || connecting || !model || theme.trim().length < 3}>{connecting ? 'Conectando con el agente…' : busy ? 'Preparando servicio…' : 'Crear y guardar servicio ↗'}</button>
         </form>{connecting && <WaitingNotice seconds={connectionSeconds} service="el agente en Render" action="Conectando con el agente y cargando los modelos…" />}<p className="form-note">Esta es una demostración: revisa siempre las letras y el contexto antes de utilizar una propuesta.</p>
         {!!recent.length && <section className="recent-drafts"><strong>Propuestas recientes en este navegador</strong>{recent.map(entry => <button type="button" key={entry.id} onClick={() => void loadRecent(entry)}>{entry.theme}<small>{recipes.find(option => option.key === entry.recipe)?.title || 'Recorrido por consultar'} · {entry.date}</small><small>Modelo: {entry.model || 'Consultar propuesta'}</small></button>)}</section>}
