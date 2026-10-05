@@ -1,20 +1,54 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { randomUUID } from 'node:crypto'
-import { createService, requestSchema, type Song } from './_lib/service-agent.js'
+import { createService, requestSchema, type Progress, type Song } from './_lib/service-agent.js'
 import { availableModels } from './_lib/models.js'
 import { saveDraft } from './_lib/drafts.js'
 
-export async function searchCatalog(query: string): Promise<Song[]> {
+const RETRYABLE_SEARCH_STATUSES = new Set([502, 503, 504])
+const DEFAULT_RETRY_DELAYS_MS = [2500, 5000, 10000]
+
+const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds))
+
+export async function searchCatalog(
+  query: string,
+  onProgress: (event: Progress) => void = () => {},
+  retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
+): Promise<Song[]> {
   const apiBase = process.env.GRAFEMA_API_URL?.replace(/\/$/, '')
   if (!apiBase || !/^https?:\/\//.test(apiBase)) throw new Error('Configura GRAFEMA_API_URL en el servidor.')
-  const response = await fetch(`${apiBase}/search/enhanced`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, mode: 'labels', limit: 15 }), signal: AbortSignal.timeout(45000),
-  })
-  if (!response.ok) throw new Error(`La API de búsqueda respondió ${response.status}`)
-  const data: unknown = await response.json()
-  if (!data || typeof data !== 'object' || !('results' in data) || !Array.isArray(data.results)) throw new Error('Respuesta de búsqueda inválida')
-  return (data.results as Song[]).filter(song => typeof song.id === 'string' && typeof song.title === 'string')
+  const attempts = retryDelaysMs.length + 1
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let response: Response
+    try {
+      response = await fetch(`${apiBase}/search/enhanced`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, mode: 'labels', limit: 15 }), signal: AbortSignal.timeout(45000),
+      })
+    } catch (error) {
+      if (attempt === attempts - 1) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`La API de búsqueda no respondió después de ${attempts} intentos: ${detail}`)
+      }
+      onProgress({ type: 'waiting', message: `La API de búsqueda en Render puede estar iniciando. Reintentando (${attempt + 2}/${attempts})…` })
+      await wait(retryDelaysMs[attempt])
+      continue
+    }
+
+    if (!response.ok) {
+      if (!RETRYABLE_SEARCH_STATUSES.has(response.status) || attempt === attempts - 1) {
+        const suffix = RETRYABLE_SEARCH_STATUSES.has(response.status) ? ` después de ${attempts} intentos` : ''
+        throw new Error(`La API de búsqueda respondió ${response.status}${suffix}`)
+      }
+      onProgress({ type: 'waiting', message: `Render respondió ${response.status}; el servicio de búsqueda puede estar despertando. Reintentando (${attempt + 2}/${attempts})…` })
+      await wait(retryDelaysMs[attempt])
+      continue
+    }
+
+    const data: unknown = await response.json()
+    if (!data || typeof data !== 'object' || !('results' in data) || !Array.isArray(data.results)) throw new Error('Respuesta de búsqueda inválida')
+    return (data.results as Song[]).filter(song => typeof song.id === 'string' && typeof song.title === 'string')
+  }
+  throw new Error('La API de búsqueda no respondió.')
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -34,7 +68,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     emit('status', { type: 'planning', message: 'Preparando el servicio…' })
   }
   try {
-    const service = await createService(parsed.data, searchCatalog, progress => emit('status', progress))
+    const searchWithWakeUp = (query: string) => searchCatalog(query, progress => emit('status', progress))
+    const service = await createService(parsed.data, searchWithWakeUp, progress => emit('status', progress))
     stage = 'draft_persistence'
     emit('status', { type: 'saving', message: 'Guardando el borrador para el dataset…' })
     const draft = await saveDraft(parsed.data, service)

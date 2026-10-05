@@ -4,9 +4,35 @@ import { assemble, buildSlots, requestSchema, shortlist, type Song } from '../ap
 import { availableModels, validateModel } from '../api/_lib/models.js'
 import { hashToken, sameToken, saveDraft, trainingExample, validateSelections, type DraftRow } from '../api/_lib/drafts.js'
 import { batchTarget, scenarios } from '../api/_lib/batch-scenarios.js'
+import { searchCatalog } from '../api/service.js'
 
 const input = requestSchema.parse({ theme: 'Esperanza', recipe: 'descendente', count: 3 })
 const song = (id: string, score: number, energy: number): Song => ({ id, title: id, lyrics: 'Letra', excerpt: 'Letra', score, labels: { energia: { valor: energy } } })
+
+test('reintenta la búsqueda cuando Render responde 502 mientras despierta', async () => {
+  const previousUrl = process.env.GRAFEMA_API_URL
+  const previousFetch = globalThis.fetch
+  const events: string[] = []
+  let attempts = 0
+  process.env.GRAFEMA_API_URL = 'https://search.example'
+  globalThis.fetch = (async () => {
+    attempts += 1
+    if (attempts === 1) return new Response('', { status: 502 })
+    return new Response(JSON.stringify({ results: [song('recuperada', .9, 3)] }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+  try {
+    const results = await searchCatalog('esperanza', event => events.push(event.type), [0])
+    assert.equal(attempts, 2)
+    assert.deepEqual(events, ['waiting'])
+    assert.equal(results[0]?.id, 'recuperada')
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousUrl === undefined) delete process.env.GRAFEMA_API_URL
+    else process.env.GRAFEMA_API_URL = previousUrl
+  }
+})
 
 test('las recetas distribuyen energía y conservan apertura y cierre', () => {
   const slots = buildSlots(input)

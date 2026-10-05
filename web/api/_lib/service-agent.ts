@@ -23,7 +23,7 @@ export type Song = {
 }
 export type Slot = { key: string; title: string; targetEnergy: number; query: string }
 export type ServiceItem = { key: string; slot: Slot; song: Song; reason: string; alternatives: Song[] }
-export type Progress = { type: 'planning' | 'searching' | 'found' | 'selecting' | 'saving'; slot?: string; query?: string; count?: number; message: string }
+export type Progress = { type: 'planning' | 'searching' | 'waiting' | 'found' | 'selecting' | 'saving'; slot?: string; query?: string; count?: number; message: string }
 
 const titleByIndex = ['Apertura', 'Preparación', 'Respuesta', 'Adoración', 'Cierre']
 
