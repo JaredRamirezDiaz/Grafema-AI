@@ -48,7 +48,8 @@ El entregable es un **sitio público de demostración llamado "Grafema AI"** : c
 
 La API de búsqueda recibie la consulta, genera su embedding, busca los cantos relevantes en Supabase y envía **solo esos candidatos** a Llama. A su vez Llama analiza los candidatos y selecciona los cantos que encajan en el servicio considerando la letra pero también el nivel de energía y el tiempo del servicio. 
 
-**Límites de la demo gratuita:** Render suspende la API tras 15 minutos de inactividad y el primer acceso puede tardar cerca de un minuto; sus archivos locales no sirven como almacenamiento persistente. Supabase puede pausar proyectos gratuitos con poca actividad durante una semana. Workers AI tiene una cuota gratuita diaria; al agotarse, las solicitudes fallarán hasta el reinicio de la cuota y la inferencia con adaptadores LoRA de Workers AI está en beta.
+> [!IMPORTANT]
+> Render suspende la API tras 15 minutos de inactividad y el primer acceso puede tardar cerca de un minuto; sus archivos locales no sirven como almacenamiento persistente. Supabase puede pausar proyectos gratuitos con poca actividad durante una semana. Workers AI tiene una cuota gratuita diaria; al agotarse, las solicitudes fallarán hasta el reinicio de la cuota y la inferencia con adaptadores LoRA de Workers AI está en beta.
 
 ## Aplicación real y siguientes pasos
 
